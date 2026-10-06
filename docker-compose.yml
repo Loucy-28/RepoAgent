@@ -1,0 +1,58 @@
+version: "3.8"
+
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - repo-agent-net
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-repo_agent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-repo_agent_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-repo_agent}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-repo_agent}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - repo-agent-net
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - repo-agent-net
+
+volumes:
+  pgdata:
+  redisdata:
+
+networks:
+  repo-agent-net:
+    driver: bridge
