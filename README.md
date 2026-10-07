@@ -301,8 +301,8 @@ repo-agent/
 ### 1. Clone and Setup
 
 ```bash
-git clone https://github.com/your-username/repo-agent.git
-cd repo-agent
+git clone https://github.com/Loucy-28/RepoAgent.git
+cd RepoAgent
 
 python -m venv .venv
 source .venv/bin/activate  # Linux/Mac
