@@ -11,8 +11,21 @@ class AgentPhase(str, Enum):
     EDITING = "EDITING"
     TESTING = "TESTING"
     REPAIRING = "REPAIRING"
+    REPLANNING = "REPLANNING"
+    WAITING_REVIEW = "WAITING_REVIEW"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    MERGED = "MERGED"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+
+
+@dataclass
+class ToolCallRecord:
+    tool_name: str
+    phase: str
+    success: bool
+    error: str = ""
 
 
 @dataclass
@@ -39,6 +52,29 @@ class AgentState:
 
     repo_path: str = ""
 
+    tool_history: list[dict] = field(default_factory=list)
+    error_history: list[dict] = field(default_factory=list)
+    replan_count: int = 0
+    max_replans: int = 2
+    loop_detected: bool = False
+    branch_name: str = ""
+    agent_routing: dict = field(default_factory=lambda: {"search": True, "analyze": True, "test": True})
+
+    def record_tool_call(self, tool_name: str, phase: str, success: bool, error: str = ""):
+        self.tool_history.append({
+            "tool": tool_name,
+            "phase": phase,
+            "success": success,
+            "error": error,
+            "iteration": self.iteration,
+        })
+        if not success and error:
+            self.error_history.append({
+                "error": error,
+                "phase": phase,
+                "iteration": self.iteration,
+            })
+
     def to_dict(self) -> dict:
         return {
             "task_id": self.task_id,
@@ -56,11 +92,18 @@ class AgentState:
             "test_passed": self.test_passed,
             "error": self.error,
             "repo_path": self.repo_path,
+            "tool_history": self.tool_history,
+            "error_history": self.error_history,
+            "replan_count": self.replan_count,
+            "max_replans": self.max_replans,
+            "loop_detected": self.loop_detected,
+            "branch_name": self.branch_name,
+            "agent_routing": self.agent_routing,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "AgentState":
-        return cls(
+        state = cls(
             task_id=data.get("task_id", ""),
             repository_id=data.get("repository_id", ""),
             description=data.get("description", ""),
@@ -76,4 +119,12 @@ class AgentState:
             test_passed=data.get("test_passed", False),
             error=data.get("error", ""),
             repo_path=data.get("repo_path", ""),
+            tool_history=data.get("tool_history", []),
+            error_history=data.get("error_history", []),
+            replan_count=data.get("replan_count", 0),
+            max_replans=data.get("max_replans", 2),
+            loop_detected=data.get("loop_detected", False),
+            branch_name=data.get("branch_name", ""),
+            agent_routing=data.get("agent_routing", {"search": True, "analyze": True, "test": True}),
         )
+        return state

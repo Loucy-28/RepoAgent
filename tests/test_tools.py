@@ -1,9 +1,11 @@
 import pytest
+from unittest.mock import patch, MagicMock
 from app.tools.read_file import read_file
 from app.tools.edit_file import edit_file
 from app.tools.list_files import list_files, get_dependencies
 from app.tools.git_diff import git_diff, git_status
 from app.tools.run_tests import run_tests
+from app.sandbox.manager import ExecutionResult
 import tempfile
 import os
 
@@ -81,10 +83,20 @@ class TestGetDependencies:
 
 
 class TestRunTests:
-    def test_run_passing_code(self):
+    @patch("app.tools.run_tests.sandbox_manager")
+    def test_run_passing_code(self, mock_sandbox):
+        mock_sandbox.execute_with_timeout.return_value = ExecutionResult(
+            success=True, stdout="hello\n", stderr="", exit_code=0,
+            timed_out=False, duration_ms=50,
+        )
         result = run_tests("print('hello')", "python")
         assert result["success"] is True
 
-    def test_run_failing_code(self):
+    @patch("app.tools.run_tests.sandbox_manager")
+    def test_run_failing_code(self, mock_sandbox):
+        mock_sandbox.execute_with_timeout.return_value = ExecutionResult(
+            success=False, stdout="", stderr="ValueError: fail\n", exit_code=1,
+            timed_out=False, duration_ms=30,
+        )
         result = run_tests("raise ValueError('fail')", "python")
         assert result["success"] is False

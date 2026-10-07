@@ -9,6 +9,11 @@ class TaskStatus(str, enum.Enum):
     EDITING = "EDITING"
     TESTING = "TESTING"
     REPAIRING = "REPAIRING"
+    REPLANNING = "REPLANNING"
+    WAITING_REVIEW = "WAITING_REVIEW"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    MERGED = "MERGED"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
@@ -21,6 +26,7 @@ class StepType(str, enum.Enum):
     EDIT = "EDIT"
     TEST = "TEST"
     REPAIR = "REPAIR"
+    REPLAN = "REPLAN"
 
 
 class CodeLanguage(str, enum.Enum):

@@ -62,12 +62,23 @@ class CodeSearch:
         scored.sort(key=lambda x: x.score, reverse=True)
         return scored[:limit]
 
-    async def vector_search(self, repo_id: str, query: str, limit: int = 10) -> list[SearchResult]:
-        return await self.keyword_search(repo_id, query, limit)
+    async def semantic_search(self, repo_id: str, query: str, limit: int = 10) -> list[SearchResult]:
+        """Placeholder for embedding-based semantic search.
+
+        Currently delegates to keyword_search with query expansion until
+        a real embedding model is integrated.
+        """
+        expanded = query + " " + " ".join(t + "s" for t in query.split() if len(t) > 2)
+        return await self.keyword_search(repo_id, expanded, limit)
 
     async def hybrid_search(self, repo_id: str, query: str, limit: int = 10) -> list[SearchResult]:
+        """Combines keyword and semantic search via reciprocal rank fusion.
+
+        Note: semantic_search is currently a keyword-based placeholder.
+        True vector search requires embedding model integration.
+        """
         keyword_results = await self.keyword_search(repo_id, query, limit * 2)
-        vector_results = await self.vector_search(repo_id, query, limit * 2)
+        semantic_results = await self.semantic_search(repo_id, query, limit * 2)
 
         all_results = {}
         for i, r in enumerate(keyword_results):
@@ -85,7 +96,7 @@ class CodeSearch:
             rank_score = 1.0 / (i + 1)
             all_results[key].score += rank_score
 
-        for i, r in enumerate(vector_results):
+        for i, r in enumerate(semantic_results):
             key = f"{r.file_path}:{r.start_line}"
             if key not in all_results:
                 all_results[key] = SearchResult(

@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.health import router as health_router
 from app.api.tasks import router as tasks_router
 from app.api.repositories import router as repositories_router
+from app.api.metrics import router as metrics_router
 from app.db.session import init_db, close_db
 from app.services.redis_client import get_redis, close_redis
 from app.observability.logger import setup_logger, get_logger
@@ -45,3 +46,4 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(tasks_router)
 app.include_router(repositories_router)
+app.include_router(metrics_router)

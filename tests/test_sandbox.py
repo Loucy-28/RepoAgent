@@ -1,5 +1,7 @@
 import pytest
-from app.sandbox.manager import DockerSandboxManager, SandboxPolicy, ExecutionResult
+from unittest.mock import MagicMock, patch
+
+from app.sandbox.manager import DockerSandboxManager, SandboxPolicy, ExecutionResult, SandboxUnavailableError
 
 
 class TestSandboxPolicy:
@@ -28,47 +30,107 @@ class TestDockerSandboxManager:
     def setup_method(self):
         self.manager = DockerSandboxManager(SandboxPolicy(timeout=5))
 
-    def test_execute_simple_python(self):
-        result = self.manager._fallback_execute("print('hello world')", "python")
+    def test_docker_unavailable_raises_error(self):
+        self.manager._client = None
+        with pytest.raises(SandboxUnavailableError, match="Docker is not available"):
+            self.manager.execute("print('hello')", "python")
+
+    def test_docker_unavailable_execute_with_timeout(self):
+        self.manager._client = None
+        with pytest.raises(SandboxUnavailableError):
+            self.manager.execute_with_timeout("print('hello')", "python")
+
+    def test_execute_success_with_mock_docker(self):
+        mock_container = MagicMock()
+        mock_container.id = "test-container-123"
+        mock_container.start = MagicMock()
+        mock_container.wait = MagicMock(return_value={"StatusCode": 0})
+        mock_container.logs = MagicMock(return_value=b"hello world\n")
+        mock_container.remove = MagicMock()
+
+        mock_client = MagicMock()
+        mock_client.containers.create.return_value = mock_container
+        self.manager._client = mock_client
+
+        result = self.manager.execute("print('hello world')", "python")
+
         assert result.success is True
         assert "hello world" in result.stdout
         assert result.exit_code == 0
+        mock_container.start.assert_called_once()
+        mock_container.wait.assert_called_once()
+        mock_container.remove.assert_called_once()
 
-    def test_execute_syntax_error(self):
-        result = self.manager._fallback_execute("def broken(\n", "python")
+    def test_execute_runtime_error_with_mock(self):
+        mock_container = MagicMock()
+        mock_container.id = "test-container-456"
+        mock_container.start = MagicMock()
+        mock_container.wait = MagicMock(return_value={"StatusCode": 1})
+        mock_container.logs = MagicMock(return_value=b"")
+        mock_container.remove = MagicMock()
+
+        mock_client = MagicMock()
+        mock_client.containers.create.return_value = mock_container
+        self.manager._client = mock_client
+
+        result = self.manager.execute("raise ValueError('test')", "python")
+
         assert result.success is False
-        assert result.exit_code != 0
+        assert result.exit_code == 1
 
-    def test_execute_runtime_error(self):
-        result = self.manager._fallback_execute("raise ValueError('test error')", "python")
-        assert result.success is False
-        assert "test error" in result.stderr
+    def test_execute_timeout_with_mock(self):
+        import requests
 
-    def test_execute_timeout(self):
-        result = self.manager._fallback_execute(
-            "import time; time.sleep(100)",
-            "python",
-        )
+        mock_container = MagicMock()
+        mock_container.id = "test-container-789"
+        mock_container.start = MagicMock()
+        mock_container.wait = MagicMock(side_effect=requests.exceptions.ReadTimeout("timeout"))
+        mock_container.kill = MagicMock()
+        mock_container.remove = MagicMock()
+
+        mock_client = MagicMock()
+        mock_client.containers.create.return_value = mock_container
+        self.manager._client = mock_client
+
+        result = self.manager.execute("import time; time.sleep(100)", "python")
+
         assert result.success is False
         assert result.timed_out is True
+        mock_container.kill.assert_called_once()
 
-    def test_execute_arithmetic(self):
-        result = self.manager._fallback_execute("print(2 + 3)", "python")
-        assert result.success is True
-        assert "5" in result.stdout
+    def test_volume_mount_passed(self):
+        mock_container = MagicMock()
+        mock_container.id = "test-vol"
+        mock_container.start = MagicMock()
+        mock_container.wait = MagicMock(return_value={"StatusCode": 0})
+        mock_container.logs = MagicMock(return_value=b"")
+        mock_container.remove = MagicMock()
 
-    def test_execute_fibonacci(self):
-        code = """
-def fib(n):
-    if n <= 1:
-        return n
-    return fib(n-1) + fib(n-2)
-print(fib(10))
-"""
-        result = self.manager._fallback_execute(code, "python")
-        assert result.success is True
-        assert "55" in result.stdout
+        mock_client = MagicMock()
+        mock_client.containers.create.return_value = mock_container
+        self.manager._client = mock_client
+
+        import os
+        repo_path = os.path.abspath("/tmp/myrepo")
+        self.manager.execute("print('ok')", "python", repo_path=repo_path)
+
+        call_kwargs = mock_client.containers.create.call_args
+        volumes = call_kwargs.kwargs.get("volumes") or call_kwargs[1].get("volumes")
+        assert volumes is not None
+        assert repo_path in volumes
+        assert volumes[repo_path]["bind"] == "/workspace"
 
     def test_duration_tracked(self):
-        result = self.manager._fallback_execute("print('fast')", "python")
+        mock_container = MagicMock()
+        mock_container.id = "test-dur"
+        mock_container.start = MagicMock()
+        mock_container.wait = MagicMock(return_value={"StatusCode": 0})
+        mock_container.logs = MagicMock(return_value=b"fast\n")
+        mock_container.remove = MagicMock()
+
+        mock_client = MagicMock()
+        mock_client.containers.create.return_value = mock_container
+        self.manager._client = mock_client
+
+        result = self.manager.execute("print('fast')", "python")
         assert result.duration_ms >= 0

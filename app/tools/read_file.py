@@ -1,11 +1,16 @@
 import os
 from typing import Optional
+from app.tools.path_validator import validate_path
 from app.observability.logger import get_logger
 
 logger = get_logger(__name__)
 
 
-def read_file(file_path: str, start_line: Optional[int] = None, end_line: Optional[int] = None) -> dict:
+def read_file(file_path: str, start_line: Optional[int] = None, end_line: Optional[int] = None, allowed_root: str = "") -> dict:
+    validation = validate_path(file_path, allowed_root)
+    if not validation["valid"]:
+        return {"file_path": file_path, "error": validation["reason"]}
+
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             lines = f.readlines()

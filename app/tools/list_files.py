@@ -1,5 +1,6 @@
 import os
 from typing import Optional
+from app.code.dependency_graph import dependency_graph
 from app.observability.logger import get_logger
 
 logger = get_logger(__name__)
@@ -26,6 +27,10 @@ def list_files(repo_path: str, extensions: Optional[list[str]] = None) -> dict:
 
 
 def get_dependencies(file_path: str) -> dict:
+    dep_info = dependency_graph.get_dependencies(file_path)
+    if "error" not in dep_info:
+        return dep_info
+
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             code = f.read()
@@ -58,3 +63,11 @@ def get_dependencies(file_path: str) -> dict:
         "imports": imports,
         "count": len(imports),
     }
+
+
+def get_impact_analysis(file_path: str) -> dict:
+    return dependency_graph.get_impact_analysis(file_path)
+
+
+def get_dependency_graph() -> dict:
+    return dependency_graph.to_dict()

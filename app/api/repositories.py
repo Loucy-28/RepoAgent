@@ -4,6 +4,7 @@ from pydantic import BaseModel
 
 from app.services.repository_service import RepositoryService
 from app.code.indexer import code_indexer
+from app.code.dependency_graph import dependency_graph
 from app.db.models import Repository
 from app.observability.logger import get_logger
 
@@ -93,3 +94,30 @@ async def index_repository(repo_id: str):
         chunks_indexed=chunks,
         status="completed",
     )
+
+
+@router.get("/{repo_id}/dependencies")
+async def get_dependency_graph(repo_id: str):
+    repo = await RepositoryService.get_repository(repo_id)
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    return dependency_graph.to_dict()
+
+
+@router.get("/{repo_id}/dependencies/{file_path:path}")
+async def get_file_dependencies(repo_id: str, file_path: str):
+    repo = await RepositoryService.get_repository(repo_id)
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    import os
+    full_path = os.path.join(repo.path, file_path)
+    deps = dependency_graph.get_dependencies(full_path)
+    impact = dependency_graph.get_impact_analysis(full_path)
+
+    return {
+        "file_path": file_path,
+        "dependencies": deps,
+        "impact_analysis": impact,
+    }

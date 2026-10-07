@@ -1,15 +1,20 @@
 import uuid
 from typing import Optional
+from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
 
 from app.services.task_service import TaskService
 from app.services.repository_service import RepositoryService
+from app.services.git_workflow import git_workflow
 from app.agent.state import AgentState, AgentPhase
 from app.agent.graph import agent_graph
 from app.db.models import Task
 from app.db.enums import TaskStatus
+from app.db.session import async_session_factory
 from app.observability.logger import get_logger
+
+from sqlalchemy import select
 
 logger = get_logger(__name__)
 
@@ -42,6 +47,10 @@ class TaskListResponse(BaseModel):
     total: int
 
 
+class ReviewRequest(BaseModel):
+    comment: str = ""
+
+
 def _task_to_response(task: Task) -> TaskResponse:
     return TaskResponse(
         id=str(task.id),
@@ -58,14 +67,39 @@ def _task_to_response(task: Task) -> TaskResponse:
 
 
 async def _run_agent(task_id: str, repo_id: str, description: str, repo_path: str, max_iterations: int):
-    state = AgentState(
-        task_id=task_id,
-        repository_id=repo_id,
-        description=description,
-        max_iterations=max_iterations,
-        repo_path=repo_path,
-    )
-    await agent_graph.run(state)
+    from app.services.redis_client import RedisLock
+
+    repo_lock = RedisLock(f"repo:{repo_id}", ttl=max_iterations * 60)
+    acquired = await repo_lock.acquire()
+    if not acquired:
+        logger.warning("agent_blocked_by_repo_lock", task_id=task_id, repo_id=repo_id)
+        await TaskService.update_status(task_id, TaskStatus.FAILED, current_step="failed")
+        return
+
+    try:
+        state = AgentState(
+            task_id=task_id,
+            repository_id=repo_id,
+            description=description,
+            max_iterations=max_iterations,
+            repo_path=repo_path,
+        )
+        final_state = await agent_graph.run(state)
+
+        async with async_session_factory() as session:
+            result = await session.execute(select(Task).where(Task.id == uuid.UUID(task_id)))
+            task = result.scalar_one_or_none()
+            if task:
+                task.result = {
+                    **(task.result or {}),
+                    "branch_name": final_state.branch_name,
+                    "diff": final_state.diff,
+                    "edits": final_state.edits,
+                    "test_passed": final_state.test_passed,
+                }
+                await session.commit()
+    finally:
+        await repo_lock.release()
 
 
 @router.post("", response_model=TaskResponse, status_code=201)
@@ -124,9 +158,124 @@ async def get_task_diff(task_id: str):
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
+    branch_name = task.result.get("branch_name", "") if task.result else ""
     diff = task.result.get("diff", "") if task.result else ""
     return {
         "task_id": task_id,
         "status": task.status.value,
+        "branch": branch_name,
         "diff": diff,
     }
+
+
+@router.post("/{task_id}/approve")
+async def approve_task(task_id: str, req: ReviewRequest = ReviewRequest()):
+    task = await TaskService.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if task.status != TaskStatus.WAITING_REVIEW:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Task is not waiting for review (current status: {task.status.value})",
+        )
+
+    async with async_session_factory() as session:
+        result = await session.execute(select(Task).where(Task.id == uuid.UUID(task_id)))
+        task = result.scalar_one_or_none()
+        if task:
+            task.status = TaskStatus.APPROVED
+            task.current_step = "approved"
+            task.result = {**(task.result or {}), "review_comment": req.comment, "approved_at": datetime.now(timezone.utc).isoformat()}
+            task.updated_at = datetime.now(timezone.utc)
+            await session.commit()
+
+    logger.info("task_approved", task_id=task_id, comment=req.comment)
+    return {
+        "task_id": task_id,
+        "status": "APPROVED",
+        "message": "Task approved. Ready for merge.",
+        "comment": req.comment,
+    }
+
+
+@router.post("/{task_id}/reject")
+async def reject_task(task_id: str, req: ReviewRequest = ReviewRequest()):
+    task = await TaskService.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if task.status != TaskStatus.WAITING_REVIEW:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Task is not waiting for review (current status: {task.status.value})",
+        )
+
+    async with async_session_factory() as session:
+        result = await session.execute(select(Task).where(Task.id == uuid.UUID(task_id)))
+        task = result.scalar_one_or_none()
+        if task:
+            task.status = TaskStatus.REJECTED
+            task.current_step = "rejected"
+            task.error_message = req.comment or "Rejected by reviewer"
+            task.completed_at = datetime.now(timezone.utc)
+            task.updated_at = datetime.now(timezone.utc)
+            await session.commit()
+
+    logger.info("task_rejected", task_id=task_id, comment=req.comment)
+    return {
+        "task_id": task_id,
+        "status": "REJECTED",
+        "message": "Task rejected.",
+        "comment": req.comment,
+    }
+
+
+@router.post("/{task_id}/merge")
+async def merge_task(task_id: str):
+    task = await TaskService.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if task.status != TaskStatus.APPROVED:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Task must be approved before merge (current status: {task.status.value})",
+        )
+
+    repo = await RepositoryService.get_repository(str(task.repository_id))
+    merge_result = {}
+    if repo and repo.path:
+        branch_name = f"agent/task-{task_id}"
+        if task.result and task.result.get("branch_name"):
+            branch_name = task.result["branch_name"]
+        merge_result = git_workflow.merge_to_main(repo.path, branch_name)
+    else:
+        merge_result = {"merged": False, "error": "Repository path not found"}
+
+    if merge_result.get("merged"):
+        async with async_session_factory() as session:
+            result = await session.execute(select(Task).where(Task.id == uuid.UUID(task_id)))
+            task = result.scalar_one_or_none()
+            if task:
+                task.status = TaskStatus.MERGED
+                task.current_step = "merged"
+                task.completed_at = datetime.now(timezone.utc)
+                task.updated_at = datetime.now(timezone.utc)
+                task.result = {**(task.result or {}), "merge": merge_result}
+                await session.commit()
+
+        logger.info("task_merged", task_id=task_id, merge=merge_result)
+        return {
+            "task_id": task_id,
+            "status": "MERGED",
+            "message": "Task changes merged.",
+            "merge": merge_result,
+        }
+    else:
+        merge_error = merge_result.get("error", "Merge failed for unknown reason")
+        logger.error("merge_failed_api", task_id=task_id, error=merge_error)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Merge failed: {merge_error}",
+        )

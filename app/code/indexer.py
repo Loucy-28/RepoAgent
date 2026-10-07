@@ -8,6 +8,7 @@ from app.db.models import CodeChunk
 from app.db.enums import CodeLanguage
 from app.db.session import async_session_factory
 from app.code.parser import code_parser, ParsedFile
+from app.code.dependency_graph import dependency_graph
 from app.services.repository_service import RepositoryService
 from app.observability.logger import get_logger
 
@@ -56,7 +57,8 @@ class CodeIndexer:
                 )
                 chunk_count += 1
 
-        logger.info("index_complete", repo_id=repo_id, chunks=chunk_count, files=len(files))
+        dep_count = dependency_graph.build(repo_path)
+        logger.info("index_complete", repo_id=repo_id, chunks=chunk_count, files=len(files), dep_nodes=dep_count)
         return chunk_count
 
     async def _save_chunk(
